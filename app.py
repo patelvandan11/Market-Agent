@@ -5,7 +5,7 @@ import asyncio
 st.title("📊 Market Intelligence Agent with Structured Output")
 st.markdown("Select a source tool to analyze, then process its output with the Structured Tool.")
 
-client = Client("http://127.0.0.1:8000/mcp")
+client = Client("https://market-agent-dlm2.onrender.com")
 
 async def call_tool(tool_name: str, params: dict):
     async with client:
