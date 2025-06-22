@@ -43,18 +43,59 @@ async def analyze_website(url: str, question: str) -> str:
     ) | StrOutputParser()
     return await chain.ainvoke({"context": context, "question": question})
 
+
+def extract_video_id(url_or_query: str) -> str:
+    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", url_or_query)
+    return match.group(1) if match else None
+
+
+def get_transcript_text(video_id: str) -> str:
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        return "\n".join([t.get("text", "") for t in transcript])
+    except Exception as e:
+        return f"[!] youtube-transcript-api failed: {e}"
+
+
+def get_transcript_yt_dlp(video_id: str) -> str:
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "writesubtitles": True,
+            "skip_download": True,
+            "subtitleslangs": ["en"],
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            subtitles = info.get("subtitles", {}) or info.get("automatic_captions", {})
+            if "en" in subtitles:
+                return f"[Transcript via captions]\nURL: {subtitles['en'][0]['url']}"
+            else:
+                return "[!] No English subtitles found via yt-dlp."
+    except Exception as e:
+        return f"[!] yt-dlp failed to fetch transcript: {e}"
+
+
 @mcp.tool
 async def ask_youtube_question(video_url_or_query: str, question: str) -> str:
-    def extract_video_id(url):
-        match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11})", url)
-        return match.group(1) if match else None
-
     if video_url_or_query.startswith("http"):
         video_id = extract_video_id(video_url_or_query)
+        if not video_id:
+            return "[!] Could not extract video ID."
     else:
-        video_id = yt_dlp.YoutubeDL({'quiet': True}).extract_info(f"ytsearch:{video_url_or_query}", download=False)['entries'][0]['id']
+        ydl = yt_dlp.YoutubeDL({'quiet': True})
+        try:
+            video_id = ydl.extract_info(f"ytsearch:{video_url_or_query}", download=False)['entries'][0]['id']
+        except Exception as e:
+            return f"[!] yt-dlp search failed: {str(e)}"
 
-    transcript = "\n".join([t.get("text", "") for t in YouTubeTranscriptApi.get_transcript(video_id)])
+    transcript = get_transcript_text(video_id)
+    if transcript.startswith("[!]"):
+        fallback = get_transcript_yt_dlp(video_id)
+        if fallback.startswith("[!]"):
+            return f"[!] Failed to retrieve transcript via both methods:\n{transcript}\n{fallback}"
+        transcript = fallback
+
     chain = ConversationChain(
         llm=ChatNVIDIA(
             model="meta/llama3-70b-instruct",
@@ -63,8 +104,9 @@ async def ask_youtube_question(video_url_or_query: str, question: str) -> str:
         ),
         memory=ConversationBufferMemory(return_messages=True)
     )
-    await chain.apredict(input=f"This is the transcript:\n{transcript}")
+    await chain.apredict(input=f"Here is the transcript:\n{transcript}")
     return await chain.apredict(input=question)
+
 
 @mcp.tool
 async def analyze_linkedin(linkedin_link: str) -> str:
@@ -77,6 +119,7 @@ async def analyze_linkedin(linkedin_link: str) -> str:
     loop = asyncio.get_running_loop()
     resp = await loop.run_in_executor(None, lambda: requests.get("https://api.scrapingdog.com/linkedin", params=params))
     return resp.text if resp.status_code == 200 else f"Error {resp.status_code}: {resp.text}"
+
 
 @mcp.tool
 async def structured_tool(input_data: str) -> str:
@@ -97,6 +140,7 @@ async def structured_tool(input_data: str) -> str:
         temperature=0.3
     ) | StrOutputParser()
     return await chain.ainvoke({"input_data": input_data})
+
 
 # ========== Run MCP Server ==========
 if __name__ == "__main__":
