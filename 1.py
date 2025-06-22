@@ -4,6 +4,8 @@ import asyncio
 import requests
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastmcp import FastMCP
 from firecrawl import AsyncFirecrawlApp
 from langchain.prompts import PromptTemplate
@@ -14,14 +16,13 @@ from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
 
-# Load environment variables
+# Load environment variables from .env
 load_dotenv()
 
-# MCP setup
+# Initialize MCP
 mcp = FastMCP("market_intelligence_agent")
 
 # ========== Website Tool ==========
-
 async def scrape_website_with_firecrawl(api_key: str, url: str, formats=['markdown'], only_main_content=True):
     app = AsyncFirecrawlApp(api_key=api_key)
     response = await app.scrape_url(url=url, formats=formats, only_main_content=only_main_content)
@@ -33,13 +34,11 @@ async def analyze_website(url: str, question: str) -> str:
         api_key=os.getenv("FIRECRAWL_API_KEY"),
         url=url
     )
-
     llm = ChatNVIDIA(
         model="meta/llama3-70b-instruct",
         nvidia_api_key=os.getenv("NVIDIA_API_KEY"),
         temperature=0.3
     )
-
     prompt = PromptTemplate(
         template="""
         You are an experienced market analyst. Based on the content of the website below, answer the following question.
@@ -51,12 +50,10 @@ async def analyze_website(url: str, question: str) -> str:
         """,
         input_variables=["context", "question"]
     )
-
     chain = prompt | llm | StrOutputParser()
     return await chain.ainvoke({"context": context, "question": question})
 
 # ========== YouTube Tool ==========
-
 def scrap_videos(query: str, max_results: int = 1):
     ydl_opts = {
         'format': 'best',
@@ -75,7 +72,7 @@ def scrap_videos(query: str, max_results: int = 1):
         } for video in videos]
 
 def extract_video_id(url: str) -> str:
-    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", url)
+    match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11})", url)
     return match.group(1) if match else None
 
 def get_transcript_text(video_id: str) -> str:
@@ -117,11 +114,9 @@ async def ask_youtube_question(video_url_or_query: str, question: str) -> str:
     return await chain.apredict(input=question)
 
 # ========== LinkedIn Tool ==========
-
 @mcp.tool
 async def analyze_linkedin(linkedin_link: str) -> str:
     scrapingdog_api_key = os.getenv("SCRAPINGDOG_API_KEY")
-    
     if not scrapingdog_api_key:
         return "API key not found. Please check your .env file."
 
@@ -163,35 +158,42 @@ async def analyze_linkedin(linkedin_link: str) -> str:
 # ========== Structured Tool ==========
 @mcp.tool
 async def structured_tool(input_data: str) -> str:
-    """
-    This tool processes structured input data and returns a formatted response.
-    """
     try:
         llm = ChatNVIDIA(
             model="meta/llama3-70b-instruct",
             nvidia_api_key=os.getenv("NVIDIA_API_KEY"),
             temperature=0.3
         )
-        
         prompt = PromptTemplate(
             template="""
             You are a data processing agent. Your task is to process the following input data and return a well-formatted, structured response in markdown format.
-            
+
             Input Data:
             {input_data}
-            
+
             Please analyze the content and structure your response with appropriate sections, headings, bullet points, and summaries.
             """,
             input_variables=["input_data"]
         )
-        
         chain = prompt | llm | StrOutputParser()
         result = await chain.ainvoke({"input_data": input_data})
         return result
     except Exception as e:
         return f"Error processing data: {str(e)}"
 
+# ========== FastAPI Application Mount ==========
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.mount("/mcp", mcp.app)
+
 if __name__ == "__main__":
-    print("Market Intelligence Agent server starting...")
-    
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=int(os.getenv("PORT", 8000)),route="/mcp")
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    print(f"✅ Market Intelligence Agent server starting on port {port} at /mcp...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
