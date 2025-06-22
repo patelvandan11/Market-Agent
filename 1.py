@@ -19,7 +19,7 @@ import yt_dlp
 # Load environment variables from .env
 load_dotenv()
 
-# Initialize MCP
+# Initialize FastMCP
 mcp = FastMCP("market_intelligence_agent")
 
 # ========== Website Tool ==========
@@ -181,8 +181,9 @@ async def structured_tool(input_data: str) -> str:
     except Exception as e:
         return f"Error processing data: {str(e)}"
 
-# ========== FastAPI Application Mount ==========
+# ========== FastAPI Mount for MCP ==========
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -190,8 +191,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.mount("/mcp", mcp.app)
 
+# ✅ Mount the MCP server at /mcp
+app.mount("/mcp", mcp.get_fastapi_app())
+
+# ========== Run Server ==========
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
